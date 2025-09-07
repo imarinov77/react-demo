@@ -16,20 +16,47 @@ import {
   TextField,
   TableSortLabel,
 } from "@mui/material";
+import { withAuthenticator } from "@aws-amplify/ui-react";
+import { fetchAuthSession } from "aws-amplify/auth";
 
-const API_URL = "https://880f0qm8f8.execute-api.eu-central-1.amazonaws.com/prod/";
+const API_URL =
+  "https://880f0qm8f8.execute-api.eu-central-1.amazonaws.com/prod/";
 
-export default function App() {
+function App({ signOut, user }) {
   const [patients, setPatients] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState(null);
-  const [form, setForm] = useState({ name: "", age: "", city: "", notes: "" });
+  const [form, setForm] = useState({
+    name: "",
+    age: "",
+    city: "",
+    notes: "",
+  });
   const [errors, setErrors] = useState({});
   const [orderBy, setOrderBy] = useState("name");
   const [order, setOrder] = useState("asc");
 
+  // проверка дали user е в групата admin
+  const isAdmin =
+    user?.signInUserSession?.idToken?.payload["cognito:groups"]?.includes(
+      "admin"
+    ) ?? false;
+
+  // Вземане на токен с Amplify v6
+  const getAuthToken = async () => {
+    const session = await fetchAuthSession();
+    return session.tokens?.idToken?.toString();
+  };
+
   const fetchPatients = async () => {
-    const res = await fetch(API_URL);
+    const token = await getAuthToken();
+    const res = await fetch(API_URL, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token,
+      },
+    });
     const data = await res.json();
     setPatients(data);
   };
@@ -37,7 +64,12 @@ export default function App() {
   const openDialog = (patient = null) => {
     if (patient) {
       setEditingPatient(patient);
-      setForm({ name: patient.name, age: patient.age, city: patient.city, notes: patient.notes });
+      setForm({
+        name: patient.name,
+        age: patient.age,
+        city: patient.city,
+        notes: patient.notes,
+      });
     } else {
       setEditingPatient(null);
       setForm({ name: "", age: "", city: "", notes: "" });
@@ -52,7 +84,8 @@ export default function App() {
     const errs = {};
     if (!form.name) errs.name = "Задължително поле";
     if (!form.age && form.age !== 0) errs.age = "Задължително поле";
-    else if (isNaN(form.age) || form.age < 0 || form.age > 100) errs.age = "Въведете число между 0 и 100";
+    else if (isNaN(form.age) || form.age < 0 || form.age > 100)
+      errs.age = "Въведете число между 0 и 100";
     if (!form.city) errs.city = "Задължително поле";
     if (!form.notes) errs.notes = "Задължително поле";
     setErrors(errs);
@@ -62,17 +95,19 @@ export default function App() {
   const savePatient = async () => {
     if (!validate()) return;
 
+    const token = await getAuthToken();
+
     if (editingPatient) {
       await fetch(API_URL, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: token },
         body: JSON.stringify({ id: editingPatient.id }),
       });
     }
 
     const res = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: token },
       body: JSON.stringify(form),
     });
     await res.json();
@@ -81,9 +116,11 @@ export default function App() {
   };
 
   const deletePatient = async (id) => {
+    if (!isAdmin) return;
+    const token = await getAuthToken();
     await fetch(API_URL, {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: token },
       body: JSON.stringify({ id }),
     });
     fetchPatients();
@@ -101,17 +138,41 @@ export default function App() {
     setPatients(sorted);
   };
 
-  useEffect(() => { fetchPatients(); }, []);
+  useEffect(() => {
+    fetchPatients();
+  }, []);
 
   return (
-    <Container maxWidth="md" style={{ marginTop: "30px", backgroundColor: "#f5f5f5", padding: "20px", borderRadius: "10px" }}>
+    <Container
+      maxWidth="md"
+      style={{
+        marginTop: "30px",
+        backgroundColor: "#f0f4f8",
+        padding: "20px",
+        borderRadius: "10px",
+      }}
+    >
       <Typography variant="h4" gutterBottom align="center">
         Списък с пациенти
       </Typography>
 
       <div style={{ textAlign: "center", marginBottom: "20px" }}>
-        <Button variant="contained" color="primary" onClick={() => openDialog()}>
-          Добави нов пациент
+        {isAdmin && (
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={() => openDialog()}
+          >
+            Добави нов пациент
+          </Button>
+        )}
+        <Button
+          variant="outlined"
+          color="secondary"
+          style={{ marginLeft: "10px" }}
+          onClick={signOut}
+        >
+          Logout
         </Button>
       </div>
 
@@ -126,11 +187,17 @@ export default function App() {
                     direction={orderBy === col ? order : "asc"}
                     onClick={() => handleSort(col)}
                   >
-                    {col === "name" ? "Име" : col === "age" ? "Години" : col === "city" ? "Град" : "Забележки"}
+                    {col === "name"
+                      ? "Име"
+                      : col === "age"
+                      ? "Години"
+                      : col === "city"
+                      ? "Град"
+                      : "Забележки"}
                   </TableSortLabel>
                 </TableCell>
               ))}
-              <TableCell>Действие</TableCell>
+              {isAdmin && <TableCell>Действие</TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -140,10 +207,24 @@ export default function App() {
                 <TableCell>{p.age}</TableCell>
                 <TableCell>{p.city}</TableCell>
                 <TableCell>{p.notes}</TableCell>
-                <TableCell style={{ display: "flex", gap: "5px" }}>
-                  <Button variant="outlined" color="primary" onClick={() => openDialog(p)}>Edit</Button>
-                  <Button variant="outlined" color="error" onClick={() => deletePatient(p.id)}>Delete</Button>
-                </TableCell>
+                {isAdmin && (
+                  <TableCell style={{ display: "flex", gap: "5px" }}>
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      onClick={() => openDialog(p)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      onClick={() => deletePatient(p.id)}
+                    >
+                      Delete
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -151,8 +232,17 @@ export default function App() {
       </Paper>
 
       <Dialog open={dialogOpen} onClose={closeDialog}>
-        <DialogTitle>{editingPatient ? "Редактирай пациент" : "Добави пациент"}</DialogTitle>
-        <DialogContent style={{ display: "flex", flexDirection: "column", gap: "15px", minWidth: "300px" }}>
+        <DialogTitle>
+          {editingPatient ? "Редактирай пациент" : "Добави пациент"}
+        </DialogTitle>
+        <DialogContent
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "15px",
+            minWidth: "300px",
+          }}
+        >
           <TextField
             label="Име"
             value={form.name}
@@ -165,7 +255,9 @@ export default function App() {
             type="number"
             inputProps={{ step: "0.1", min: 0, max: 100 }}
             value={form.age}
-            onChange={(e) => setForm({ ...form, age: parseFloat(e.target.value) })}
+            onChange={(e) =>
+              setForm({ ...form, age: parseFloat(e.target.value) })
+            }
             error={!!errors.age}
             helperText={errors.age}
           />
@@ -194,3 +286,5 @@ export default function App() {
     </Container>
   );
 }
+
+export default withAuthenticator(App);
