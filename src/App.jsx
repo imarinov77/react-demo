@@ -16,60 +16,78 @@ import {
   TextField,
   TableSortLabel,
 } from "@mui/material";
-import { withAuthenticator } from "@aws-amplify/ui-react";
-import { fetchAuthSession } from "aws-amplify/auth";
 
-const API_URL =
-  "https://880f0qm8f8.execute-api.eu-central-1.amazonaws.com/prod/";
+// aws-amplify 6.x импорти
+import { fetchAuthSession } from "@aws-amplify/auth";
+import awsconfig from "./aws-exports";
+import { withAuthenticator } from "@aws-amplify/ui-react";
+
+const API_NAME = "PatientsAPI";
+const API_PATH = "/"; // пътят трябва да започва с '/'
+// Намира endpoint от няколко възможни места в конфигурацията
+const API_ENDPOINT = (() => {
+  const rest = (awsconfig?.API?.REST?.endpoints) || [];
+  const root = (awsconfig?.API?.endpoints) || [];
+  const all = [...rest, ...root];
+  const byName = all.find((e) => e?.name === API_NAME)?.endpoint;
+  return byName || rest[0]?.endpoint || root[0]?.endpoint || "";
+})();
 
 function App({ signOut, user }) {
   const [patients, setPatients] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState(null);
-  const [form, setForm] = useState({
-    name: "",
-    age: "",
-    city: "",
-    notes: "",
-  });
+  const [form, setForm] = useState({ name: "", age: "", city: "", notes: "" });
   const [errors, setErrors] = useState({});
   const [orderBy, setOrderBy] = useState("name");
   const [order, setOrder] = useState("asc");
+  const [isAdmin, setIsAdmin] = useState(
+    !!(user && user.signInUserSession?.idToken?.payload?.["cognito:groups"]?.includes("admin"))
+  );
 
-  // проверка дали user е в групата admin
-  const isAdmin =
-    user?.signInUserSession?.idToken?.payload["cognito:groups"]?.includes(
-      "admin"
-    ) ?? false;
-
-  // Вземане на токен с Amplify v6
   const getAuthToken = async () => {
     const session = await fetchAuthSession();
-    return session.tokens?.idToken?.toString();
+    // Use ID token for API Gateway Cognito authorizer
+    const idToken = session.tokens?.idToken?.toString();
+    return idToken || "";
+  };
+
+  const doRequest = async (method, body, pathSuffix = "") => {
+    const token = await getAuthToken();
+    const resp = await fetch(`${API_ENDPOINT}${API_PATH}${pathSuffix}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`HTTP ${resp.status} ${text}`);
+    }
+    return resp.json().catch(() => ({}));
   };
 
   const fetchPatients = async () => {
-    const token = await getAuthToken();
-    const res = await fetch(API_URL, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: token,
-      },
-    });
-    const data = await res.json();
-    setPatients(data);
+    if (!API_ENDPOINT) {
+      // eslint-disable-next-line no-console
+      console.error("AWS Amplify API endpoint is missing in aws-exports.js");
+      throw new Error("Missing API endpoint configuration");
+    }
+    const data = await doRequest('GET');
+    // Backend returns either array or { user, groups, patients }
+    const list = Array.isArray(data) ? data : (data.patients || []);
+    setPatients(list);
+    if (data && Array.isArray(data.groups)) {
+      setIsAdmin(data.groups.includes("admin"));
+    }
   };
 
   const openDialog = (patient = null) => {
     if (patient) {
       setEditingPatient(patient);
-      setForm({
-        name: patient.name,
-        age: patient.age,
-        city: patient.city,
-        notes: patient.notes,
-      });
+      setForm({ name: patient.name, age: patient.age, city: patient.city, notes: patient.notes });
     } else {
       setEditingPatient(null);
       setForm({ name: "", age: "", city: "", notes: "" });
@@ -83,8 +101,7 @@ function App({ signOut, user }) {
   const validate = () => {
     const errs = {};
     if (!form.name) errs.name = "Задължително поле";
-    if (!form.age && form.age !== 0) errs.age = "Задължително поле";
-    else if (isNaN(form.age) || form.age < 0 || form.age > 100)
+    if (form.age === "" || form.age === null || isNaN(form.age) || form.age < 0 || form.age > 100)
       errs.age = "Въведете число между 0 и 100";
     if (!form.city) errs.city = "Задължително поле";
     if (!form.notes) errs.notes = "Задължително поле";
@@ -94,35 +111,19 @@ function App({ signOut, user }) {
 
   const savePatient = async () => {
     if (!validate()) return;
-
-    const token = await getAuthToken();
-
     if (editingPatient) {
-      await fetch(API_URL, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json", Authorization: token },
-        body: JSON.stringify({ id: editingPatient.id }),
-      });
+      await doRequest('DELETE', { id: editingPatient.id });
     }
 
-    const res = await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: token },
-      body: JSON.stringify(form),
-    });
-    await res.json();
+    await doRequest('POST', form);
+
     fetchPatients();
     closeDialog();
   };
 
   const deletePatient = async (id) => {
     if (!isAdmin) return;
-    const token = await getAuthToken();
-    await fetch(API_URL, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json", Authorization: token },
-      body: JSON.stringify({ id }),
-    });
+    await doRequest('DELETE', { id });
     fetchPatients();
   };
 
@@ -139,6 +140,9 @@ function App({ signOut, user }) {
   };
 
   useEffect(() => {
+    // initialize admin from user object as a fallback
+    const initialAdmin = !!(user && user.signInUserSession?.idToken?.payload?.["cognito:groups"]?.includes("admin"));
+    setIsAdmin(initialAdmin);
     fetchPatients();
   }, []);
 
@@ -158,11 +162,7 @@ function App({ signOut, user }) {
 
       <div style={{ textAlign: "center", marginBottom: "20px" }}>
         {isAdmin && (
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={() => openDialog()}
-          >
+          <Button variant="contained" color="primary" onClick={() => openDialog()}>
             Добави нов пациент
           </Button>
         )}
@@ -209,18 +209,10 @@ function App({ signOut, user }) {
                 <TableCell>{p.notes}</TableCell>
                 {isAdmin && (
                   <TableCell style={{ display: "flex", gap: "5px" }}>
-                    <Button
-                      variant="outlined"
-                      color="primary"
-                      onClick={() => openDialog(p)}
-                    >
+                    <Button variant="outlined" color="primary" onClick={() => openDialog(p)}>
                       Edit
                     </Button>
-                    <Button
-                      variant="outlined"
-                      color="error"
-                      onClick={() => deletePatient(p.id)}
-                    >
+                    <Button variant="outlined" color="error" onClick={() => deletePatient(p.id)}>
                       Delete
                     </Button>
                   </TableCell>
@@ -232,16 +224,9 @@ function App({ signOut, user }) {
       </Paper>
 
       <Dialog open={dialogOpen} onClose={closeDialog}>
-        <DialogTitle>
-          {editingPatient ? "Редактирай пациент" : "Добави пациент"}
-        </DialogTitle>
+        <DialogTitle>{editingPatient ? "Редактирай пациент" : "Добави пациент"}</DialogTitle>
         <DialogContent
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "15px",
-            minWidth: "300px",
-          }}
+          style={{ display: "flex", flexDirection: "column", gap: "15px", minWidth: "300px" }}
         >
           <TextField
             label="Име"
@@ -255,9 +240,7 @@ function App({ signOut, user }) {
             type="number"
             inputProps={{ step: "0.1", min: 0, max: 100 }}
             value={form.age}
-            onChange={(e) =>
-              setForm({ ...form, age: parseFloat(e.target.value) })
-            }
+            onChange={(e) => setForm({ ...form, age: parseFloat(e.target.value) })}
             error={!!errors.age}
             helperText={errors.age}
           />
